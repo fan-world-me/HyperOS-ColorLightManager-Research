@@ -1,150 +1,85 @@
 # HyperOS ColorLightManager Research
 
-> Reverse engineering research of the RGB camera ring LED system on **POCO X8 Pro** / **Redmi Turbo 5** (codename: `klee`).
+Reverse-engineering the hidden Xiaomi/HyperOS API that controls the RGB
+ring around the rear camera on the POCO X8 Pro (and likely shared
+hardware on Redmi Turbo 5 / other `klee`-family devices).
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Status: WIP](https://img.shields.io/badge/Status-Work%20In%20Progress-yellow)]()
-[![Platform: HyperOS](https://img.shields.io/badge/Platform-HyperOS%2FMiUI-orange)]()
+**Status: working.** A confirmed, end-to-end, on-device tested method for
+lighting the ring in custom colors exists — see below. As far as we know
+this is the first publicly documented working method for this specific
+hardware.
 
----
-
-## Overview
-
-This repository documents ongoing reverse engineering of the **ColorLightManager** subsystem in Xiaomi's HyperOS / MIUI framework. The goal is to fully understand and replicate the Binder-based API that controls the RGB LED ring surrounding the rear camera module on supported devices.
-
-The research covers:
-
-- **AW21024** — the Awinic RGB LED controller chip used in the hardware
-- **ColorLightManager** — a proprietary Xiaomi framework component managing LED patterns and states
-- **HyperLightsService** — the system service brokering LED access
-- **ILightsManager** — the AIDL / Binder interface exposed to privileged callers
-- Hidden API surface accessible via Shizuku or root
-
----
-
-## Supported Devices
-
-| Device | Codename | Status |
-|---|---|---|
-| POCO X8 Pro | klee | ✅ Primary research target |
-| Redmi Turbo 5 | klee | ✅ Same hardware, same ROM |
-
-Other HyperOS devices with camera ring LEDs may share a similar or identical interface — contributions welcome.
-
----
-
-## Repository Structure
-
-```
-HyperOS-ColorLightManager-Research/
-├── docs/
-│   ├── API.md          # Known ILightsManager method signatures
-│   ├── BINDER.md       # Binder interface, permissions, Shizuku notes
-│   ├── FINDINGS.md     # Hardware and framework components identified
-│   ├── RESEARCH.md     # Running summary of current findings
-│   └── TIMELINE.md     # Chronological log of reverse engineering steps
-├── src/                # Source code / PoC implementations (WIP)
-├── examples/           # Usage examples and Shizuku integration snippets
-├── scripts/            # Helper scripts for analysis
-├── logs/               # Captured logcat / binder traces (sanitised)
-├── DISCLAIMER.md       # Legal disclaimer — read before using anything here
-├── SECURITY.md         # Responsible disclosure policy
-├── CONTRIBUTING.md     # How to contribute
-├── CODE_OF_CONDUCT.md  # Community standards
-├── CHANGELOG.md        # What changed and when
-└── LICENSE             # GNU General Public License v3.0
-```
-
----
-
-## Key Findings
-
-### Hardware
-
-- LED controller chip: **AW21024** (Awinic, 24-channel RGB LED driver)
-- Controlled via I²C from the SoC; brightness, color and patterns are driven by the framework layer
-
-### Framework Components
-
-| Component | Location | Role |
-|---|---|---|
-| `ColorLightManager` | `framework.jar` | High-level manager, orchestrates LED states |
-| `HyperLightsService` | `miui-services.jar` | System service, enforces permissions |
-| `ILightsManager` | AIDL / Binder | Interface used by clients to call into the service |
-
-### Known API Methods
+## TL;DR
 
 ```java
-// ILightsManager Binder interface — miui.lights.ILightsManager
-void setColorfulLight(int styleType, int[] colors, int speed, int brightness);
-void setColorCommon(int r, int g, int b, int brightness);
-void setColorLed(int ledIndex, int r, int g, int b);
-void setCustomLight(int[] pattern);
+// via Shizuku, no root required
+IBinder raw = SystemServiceHelper.getSystemService("miui.lights.ILightsManager");
+ILightsManager lights = ILightsManager.Stub.asInterface(new ShizukuBinderWrapper(raw));
+
+lights.setCustomLight(
+    0xFFFF0000,            // ARGB color, e.g. red
+    0,                      // flashMode — 0 = solid
+    500,                    // onMs — see docs/API.md timing note
+    0,                      // offMs
+    0,                      // brightNessMode
+    "com.android.camera",   // MUST be exactly this string — see docs/BINDER.md
+    12,                     // styleType — camera
+    0                       // userId
+);
 ```
 
-- `styleType 12` → camera ring lighting mode
-- Full parameter semantics are still being mapped — see [`docs/API.md`](docs/API.md)
+That's the entire working call. Everything else in this repo documents
+how it was found, what doesn't work, and why.
 
-### Access Methods
+## Repo layout
 
-- Calling these methods requires elevated permissions not granted to normal apps
-- **Shizuku** is the primary target for rootless access
-- Root / ADB shell can call the Binder directly via `service call`
+```
+docs/
+  API.md         — full method table, styleType values, timing notes
+  BINDER.md       — service registration, permission-check quirk, how to get the IBinder
+  FINDINGS.md     — hardware + component summary, confirmed dead ends
+  RESEARCH.md     — tools/methodology, Termux build gotchas, classloader collision warning
+  TIMELINE.md     — condensed step-by-step history of the investigation
+src/
+  main/java/miui/lights/ILightsManager.java
+                  — the real interface, annotated (reference only — see warning inside)
+examples/
+  lightsapi/ILightsManager.java
+                  — the SAME interface, safe to actually use (own package, no collision)
+  LightsBridge.kt — Shizuku binder bridge, minimal
+  HaloLightService.kt
+                  — working foreground-service example: full rainbow sweep on the ring
+```
 
----
+## Quick start (if you just want to try it)
 
-## Goals
+1. Install [Shizuku](https://shizuku.rikka.app/), start it (wireless
+   debugging or ADB, no root needed).
+2. Build a small app using `examples/lightsapi/ILightsManager.java` +
+   `examples/LightsBridge.kt` as a starting point — grant it Shizuku
+   permission at runtime.
+3. Call `LightsBridge.setCameraRing(color, onMs)` from anywhere.
 
-- [x] Identify LED controller chip (AW21024)
-- [x] Locate `ColorLightManager` in `framework.jar`
-- [x] Locate `HyperLightsService` in `miui-services.jar`
-- [x] Identify `ILightsManager` Binder interface
-- [x] Map known method signatures
-- [ ] Fully document all method parameters and enums
-- [ ] Build working PoC via Shizuku (rootless)
-- [ ] Build open-source client library
-- [ ] Test on other HyperOS devices with camera ring LEDs
+See `docs/RESEARCH.md` for the full toolchain notes (this was largely
+built and tested on-device via Termux, no computer required).
 
----
+## Why this was hard
 
-## Getting Started
-
-**You cannot run any of this without the proprietary Xiaomi framework.** No firmware files or APKs are redistributed in this repository — see [`DISCLAIMER.md`](DISCLAIMER.md).
-
-To reproduce the analysis:
-
-1. Extract `framework.jar` and `miui-services.jar` from your own device (ADB pull from `/system/framework/`)
-2. Decompile with [jadx](https://github.com/skylot/jadx) or [apktool](https://apktool.org/)
-3. Search for `ColorLightManager`, `HyperLightsService`, `ILightsManager`
-4. See [`docs/RESEARCH.md`](docs/RESEARCH.md) for analysis notes and pointers
-
----
-
-## Contributing
-
-Contributions are very welcome — especially from owners of other HyperOS devices with camera ring LEDs.
-
-Please include in your PR / issue:
-- Device model and codename
-- HyperOS / MIUI version
-- Android version
-- Relevant logcat output
-- Decompiled class names / method signatures if applicable
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for full guidelines.
-
-**Do not upload proprietary Xiaomi binaries, firmware images, or APKs.**
-
----
-
-## Legal
-
-This project is licensed under the **GNU General Public License v3.0** — see [`LICENSE`](LICENSE) for the full text.
-
-All research is conducted on firmware extracted from personally-owned devices. No proprietary files are redistributed. See [`DISCLAIMER.md`](DISCLAIMER.md) for the full disclaimer.
-
----
+No public Xiaomi SDK or documentation exists for this feature. The only
+official-ish entry point (the "rhythmic light" music-reactive mode) only
+reacts to audio, not arbitrary custom colors. Getting from there to a
+working `setCustomLight` call meant decompiling three system jars,
+finding a permission-check inconsistency, and debugging several
+real on-device bugs along the way (see `docs/TIMELINE.md` for the full
+account, including a classic Java classloader collision that cost a full
+debugging cycle before being caught).
 
 ## Disclaimer
 
-This is an independent community research project. It is not affiliated with, endorsed by, or sponsored by Xiaomi, POCO, or any related entity. All trademarks belong to their respective owners.
+This uses an internal, undocumented, unsupported system API found via
+reverse engineering. It works on the specific firmware version this was
+tested against; Xiaomi can change or remove any of this in a future
+update without notice. Shizuku is required (a legitimate, widely-used
+tool); no root, no exploit, no modification of system files is involved
+— everything here is a normal signed app talking to a system service it
+was given permission to reach.
