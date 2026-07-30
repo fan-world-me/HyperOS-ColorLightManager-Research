@@ -4,32 +4,29 @@ Reverse-engineering the hidden Xiaomi/HyperOS API that controls the RGB
 ring around the rear camera on the POCO X8 Pro (and likely shared
 hardware on Redmi Turbo 5 / other `klee`-family devices).
 
-**Status: working.** A confirmed, end-to-end, on-device tested method for
-lighting the ring in custom colors exists — see below. As far as we know
-this is the first publicly documented working method for this specific
-hardware.
+**Status: working, flicker-free.** A confirmed, end-to-end, on-device
+tested method for smoothly animating the ring in custom colors exists —
+see below. As far as we know this is the first publicly documented
+working method for this specific hardware.
 
 ## TL;DR
 
 ```java
-// via Shizuku, no root required
+// via Shizuku, no root required — confirmed flicker-free at 25ms update rate
 IBinder raw = SystemServiceHelper.getSystemService("miui.lights.ILightsManager");
 ILightsManager lights = ILightsManager.Stub.asInterface(new ShizukuBinderWrapper(raw));
 
-lights.setCustomLight(
-    0xFFFF0000,            // ARGB color, e.g. red
-    0,                      // flashMode — 0 = solid
-    500,                    // onMs — see docs/API.md timing note
-    0,                      // offMs
-    0,                      // brightNessMode
-    "com.android.camera",   // MUST be exactly this string — see docs/BINDER.md
-    12,                     // styleType — camera
-    0                       // userId
+lights.setColorCommon(
+    0xFFFF0000,             // ARGB color, e.g. red
+    "com.android.camera",   // pkg — content doesn't matter for this method, no caller check
+    3,                       // styleType — "music rhythm" zone, same physical ring, no auto-off timer
+    0                        // userId
 );
 ```
 
-That's the entire working call. Everything else in this repo documents
-how it was found, what doesn't work, and why.
+That's the whole working call — no timer race, safe to call every ~25ms
+for smooth animation. See `docs/FINDINGS.md` "UPDATE" section for why
+this beats the originally-found `setCustomLight`/`styleType=12` path.
 
 ## Repo layout
 

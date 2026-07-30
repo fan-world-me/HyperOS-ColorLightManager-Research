@@ -75,3 +75,21 @@
    launch. As far as this repo's authors are aware, this is the first
    publicly documented working method for programmatically controlling
    this specific ring.
+
+10. **Found the real fix for the flicker (not just a tuning knob).**
+    `setCustomLight`'s server-side path always schedules a Handler-based
+    auto-off timer, no matter how the `onMs`/`holdMs` ratio is tuned —
+    every combination tried (equal to step interval, 1.3x, 8.5x, etc.)
+    either flickered or froze on the first color, because it's the same
+    race condition at different odds, not a parameter to dial away.
+    `setColorCommon` with `styleType=3` (the same "music rhythm" light
+    zone the stock audio-reactive feature drives) has **no timer at all**
+    in its server-side implementation — an unconditional immediate state
+    write. Switching to it eliminated the flicker completely at a 25ms
+    update rate, no tuning required.
+
+11. **Final working build:** a two-pass rainbow sweep (red → full spectrum
+    → red → full spectrum → red, ~5 seconds total, no flicker), triggered
+    automatically on app open, running in a foreground service so it
+    survives the app being closed. This is the version documented as
+    "confirmed working" throughout this repo.

@@ -82,3 +82,55 @@ this specific ring.
   is not registered through the standard `SystemServiceRegistry`, so it
   must be obtained by another means (constructor, or via the
   `getColorLightManager()` bridge — see `docs/BINDER.md`).
+
+## UPDATE — flicker-free method found, confirmed working end-to-end
+
+`setCustomLight` (code 4) is NOT the best call for animation — its
+server-side path schedules a Handler-based auto-off timer
+(`mLightHandler.sendMessageDelayed(..., onMs+offMs)`) on every call. At
+animation-speed update rates (every 25-60ms) this timer sometimes fires
+before the next update lands, causing visible on/off flicker.
+
+**`setColorCommon` (code 2) with `styleType=3` has no timer at all** in
+its server-side implementation:
+
+```java
+void setColorCommonLocked(int color) {
+    ...
+    updateState(color, 1, 0, 0, 0, 3);
+    setPriorityLightLocked(...);
+}
+```
+
+No `Handler.postDelayed`/`sendMessageDelayed` anywhere in this call path
+— it's an immediate, unconditional state write, not a timed flash. This
+`styleType=3` ("music rhythm") light zone is the same physical camera
+ring the stock "rhythmic light" audio-reactive feature drives — confirmed
+by this project's own real-device testing, not just decompilation.
+
+**Confirmed working, flicker-free rainbow**, called every ~25ms in a
+loop with no gaps or flicker:
+
+```kotlin
+lightsManager.setColorCommon(colorArgb, "com.android.camera", 3, 0)
+```
+
+(the `pkg` argument content doesn't matter here — `setColorCommon` has no
+caller check at all, unlike `setCustomLight`'s string-based one.)
+
+This supersedes the `setCustomLight`-based examples elsewhere in this
+repo for anything animation-speed; `setCustomLight` is still the only
+confirmed path for the pure `styleType=12` camera-specific behavior
+(distinguishing "camera" vs "voice assistant" light contexts) if that
+distinction matters for your use case, but for just driving smooth
+color animation, `setColorCommon`/`styleType=3` is simpler and doesn't
+flicker.
+
+Also checked and ruled out: `setColorfulLight` (code 1) cannot be used
+for this at all — it only plays fixed pre-baked XML animation sequences
+for a whitelisted set of `styleType` scene values, and `styleType=12`
+(camera) is not among them (no `lightstyle_camera.xml` exists on
+device). Confirmed by decompiling `isSupportLedStripScene()` and the
+on-device `/product/etc/lights/` directory listing (only
+`lightstyle_battery.xml`, `lightstyle_game.xml`,
+`lightstyle_game_colorful.xml` exist).
